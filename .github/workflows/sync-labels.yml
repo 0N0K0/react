@@ -1,0 +1,57 @@
+name: Sync Labels
+
+on:
+    workflow_dispatch:
+
+permissions:
+  contents: write
+  issues: write
+  repository-projects: write
+  
+jobs:
+  sync-labels:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download latest GitHub CLI
+        run: |
+          # Get latest release URL
+          URL=$(curl -s https://api.github.com/repos/cli/cli/releases/latest \
+            | grep "browser_download_url" \
+            | grep "linux_amd64.tar.gz" \
+            | cut -d '"' -f 4)
+
+          echo "Downloading $URL"
+          curl -sL "$URL" -o gh.tar.gz
+          tar -xzf gh.tar.gz
+          FOLDER=$(tar -tzf gh.tar.gz | head -1 | cut -f1 -d"/")
+          sudo cp "$FOLDER/bin/gh" /usr/local/bin/
+
+      - name: Authenticate GitHub CLI
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | gh auth login --with-token
+
+      - name: Remove all existing labels
+        run: |
+          echo "Suppression des labels existants dans $GITHUB_REPOSITORY..."
+          gh label list -R "$GITHUB_REPOSITORY" --json name | jq -r '.[].name' | while IFS= read -r label; do
+              echo "Suppression du label : \"$label\""
+              gh label delete "$label" -R "$GITHUB_REPOSITORY" --yes || echo "Label \"$label\" déjà supprimé ou introuvable"
+          done
+
+      - name: Sync labels from template
+        run: |
+          TEMPLATE_REPO="0N0K0/template-labels"
+
+          echo "Récupération des labels depuis $TEMPLATE_REPO..."
+          for label in $(gh label list -R "$TEMPLATE_REPO" --json name,color,description -q '.[] | @base64'); do
+            _jq() {
+              echo "$label" | base64 --decode | jq -r "$1"
+            }
+
+            name=$(_jq '.name')
+            color=$(_jq '.color')
+            description=$(_jq '.description')
+
+            echo "Création du label : $name"
+            gh label create "$name" --color "$color" --description "$description" -R "$GITHUB_REPOSITORY" || true
+          done
